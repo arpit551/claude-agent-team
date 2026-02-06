@@ -2,6 +2,8 @@
 
 A CLI wrapper for [Claude Code Agent Teams](https://code.claude.com/docs/en/agent-teams) — configure and launch coordinated multi-agent teams with a simple YAML config.
 
+> **v2 Architecture (Iteration 6)**: Now uses direct process management instead of tmux. See [ARCHITECTURE-UPDATE.md](ARCHITECTURE-UPDATE.md) for migration details.
+
 ## What This Does
 
 CATT simplifies launching Claude Code Agent Teams by:

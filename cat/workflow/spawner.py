@@ -1,33 +1,46 @@
 """Agent spawner for workflow execution."""
 
+import logging
 from pathlib import Path
 from typing import Optional
 
 from cat.agent.models import AgentConfig, AgentRole, AgentStatus
 from cat.agent.registry import AgentRegistry
-from cat.agent.tmux import TmuxController
+from cat.agent.controller import AgentController
 from cat.interactive.config import ProjectConfig
+from cat.workflow.exceptions import (
+    AgentSpawnError,
+    DependencyError,
+    CircularDependencyError,
+)
+from cat.workflow.performance import timed, benchmark
+
+logger = logging.getLogger(__name__)
 
 
 class AgentSpawner:
-    """Spawns agents in tmux based on workflow configuration."""
+    """Spawns agents using AgentController."""
 
     def __init__(
         self,
         config: ProjectConfig,
-        tmux: TmuxController,
+        controller: AgentController,
         registry: AgentRegistry,
     ):
         self.config = config
-        self.tmux = tmux
+        self.controller = controller
         self.registry = registry
 
+        # Validate configuration on initialization
+        self._validate_dependencies()
+
+    @timed("spawn_agent")
     def spawn_agent(
         self,
         agent_config: AgentConfig,
         additional_context: Optional[str] = None,
     ) -> bool:
-        """Spawn a single agent in tmux.
+        """Spawn a single agent using AgentController.
 
         Args:
             agent_config: Agent configuration
@@ -47,29 +60,54 @@ class AgentSpawner:
             prompt += f"\n\nAdditional Context:\n{additional_context}"
 
         try:
-            # Spawn in tmux
-            pane = self.tmux.spawn_agent(
+            # Validate working directory exists
+            if not self.config.working_dir.exists():
+                raise AgentSpawnError(
+                    role,
+                    f"Working directory does not exist: {self.config.working_dir}",
+                )
+
+            # Spawn agent via controller
+            logger.info(f"Spawning {role.display_name} with model {agent_config.model.value}")
+            agent_process = self.controller.spawn_agent(
                 role=role.value,
                 prompt=prompt,
                 model=agent_config.model.value,
                 working_dir=self.config.working_dir,
             )
 
-            # Update registry with pane info
-            self.registry.set_tmux_pane(role, pane.target)
+            # Verify output file was created
+            if not agent_process.output_file.exists():
+                raise AgentSpawnError(
+                    role,
+                    "Output file was not created",
+                )
+
+            # Update registry with output file
             self.registry.update_status(role, AgentStatus.RUNNING)
+            self.registry.set_output_file(role, agent_process.output_file)
 
-            # Set up output file
-            output_file = self.config.config_dir / "output" / f"{role.value}.md"
-            self.registry.set_output_file(role, output_file)
-
+            logger.info(f"Successfully spawned {role.display_name} (output: {agent_process.output_file})")
             return True
 
-        except Exception as e:
+        except AgentSpawnError as e:
+            # Already formatted error
+            logger.error(f"Spawn error: {e}")
             self.registry.update_status(
                 role,
                 AgentStatus.FAILED,
                 error_message=str(e)
+            )
+            return False
+
+        except Exception as e:
+            # Wrap unexpected errors
+            error = AgentSpawnError(role, "Unexpected error", original_error=e)
+            logger.error(f"Unexpected spawn error: {error}", exc_info=True)
+            self.registry.update_status(
+                role,
+                AgentStatus.FAILED,
+                error_message=str(error)
             )
             return False
 
@@ -199,3 +237,63 @@ class AgentSpawner:
                 blocked.append((agent_config, missing))
 
         return blocked
+
+    def _validate_dependencies(self) -> None:
+        """Validate agent dependencies for circular references and validity.
+
+        Raises:
+            CircularDependencyError: If circular dependency detected
+            DependencyError: If invalid dependency found
+        """
+        workflow = self.config.agent_workflow_order
+        agent_roles = {agent.role.value for agent in workflow}
+
+        # Check for circular dependencies using DFS
+        for agent_config in workflow:
+            visited = set()
+            path = []
+            if self._has_cycle(agent_config.role.value, visited, path, workflow):
+                raise CircularDependencyError(path + [agent_config.role.value])
+
+            # Check all dependencies exist
+            for dep in agent_config.depends_on:
+                if dep not in agent_roles:
+                    raise DependencyError(
+                        agent_config.role,
+                        missing_dependencies=[dep],
+                    )
+
+    def _has_cycle(
+        self,
+        role: str,
+        visited: set[str],
+        path: list[str],
+        workflow: list[AgentConfig],
+    ) -> bool:
+        """Check for circular dependencies using DFS.
+
+        Args:
+            role: Current role being checked
+            visited: Set of visited roles in current path
+            path: Current dependency path
+            workflow: All agent configs
+
+        Returns:
+            True if cycle detected
+        """
+        if role in visited:
+            return True
+
+        visited.add(role)
+        path.append(role)
+
+        # Find config for this role
+        config = next((a for a in workflow if a.role.value == role), None)
+        if config:
+            for dep in config.depends_on:
+                if self._has_cycle(dep, visited, path, workflow):
+                    return True
+
+        visited.remove(role)
+        path.pop()
+        return False

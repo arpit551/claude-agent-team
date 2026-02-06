@@ -116,21 +116,6 @@ class AgentRegistry:
         self._dirty = True
         return state
 
-    def set_tmux_pane(self, role: AgentRole, pane: str) -> AgentState:
-        """Set tmux pane for agent.
-
-        Args:
-            role: Agent role
-            pane: Tmux pane target string
-
-        Returns:
-            Updated AgentState
-        """
-        state = self.get_or_register(role)
-        state.tmux_pane = pane
-        self._dirty = True
-        return state
-
     def set_output_file(self, role: AgentRole, path: Path) -> AgentState:
         """Set output file for agent.
 
@@ -268,7 +253,6 @@ class AgentRegistry:
         """Reset all agents to idle state."""
         for state in self.agents.values():
             state.status = AgentStatus.IDLE
-            state.tmux_pane = None
             state.current_task = None
             state.iteration_count = 0
             state.progress_percent = 0

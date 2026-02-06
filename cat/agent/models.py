@@ -157,7 +157,6 @@ class AgentState:
 
     role: AgentRole
     status: AgentStatus = AgentStatus.IDLE
-    tmux_pane: Optional[str] = None
     current_task: Optional[str] = None
     iteration_count: int = 0
     progress_percent: int = 0
@@ -207,7 +206,6 @@ class AgentState:
         return {
             "role": self.role.value,
             "status": self.status.value,
-            "tmux_pane": self.tmux_pane,
             "current_task": self.current_task,
             "iteration_count": self.iteration_count,
             "progress_percent": self.progress_percent,
@@ -223,7 +221,6 @@ class AgentState:
         return cls(
             role=AgentRole(data["role"]),
             status=AgentStatus(data.get("status", "idle")),
-            tmux_pane=data.get("tmux_pane"),
             current_task=data.get("current_task"),
             iteration_count=data.get("iteration_count", 0),
             progress_percent=data.get("progress_percent", 0),

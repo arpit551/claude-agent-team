@@ -10,6 +10,108 @@ import yaml
 from cat.agent.models import AgentConfig, AgentRole, get_default_agent_configs
 
 
+@dataclass
+class PerformanceSettings:
+    """Performance optimization settings."""
+
+    cache_enabled: bool = True
+    cache_ttl: float = 1.0  # seconds
+    benchmark_enabled: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "cache_enabled": self.cache_enabled,
+            "cache_ttl": self.cache_ttl,
+            "benchmark_enabled": self.benchmark_enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PerformanceSettings":
+        return cls(
+            cache_enabled=data.get("cache_enabled", True),
+            cache_ttl=data.get("cache_ttl", 1.0),
+            benchmark_enabled=data.get("benchmark_enabled", False),
+        )
+
+
+@dataclass
+class WatcherSettings:
+    """File watcher settings."""
+
+    enabled: bool = True
+    use_watchdog: bool = True
+    poll_interval: float = 2.0  # seconds
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "use_watchdog": self.use_watchdog,
+            "poll_interval": self.poll_interval,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WatcherSettings":
+        return cls(
+            enabled=data.get("enabled", True),
+            use_watchdog=data.get("use_watchdog", True),
+            poll_interval=data.get("poll_interval", 2.0),
+        )
+
+
+@dataclass
+class LoggingSettings:
+    """Logging configuration settings."""
+
+    level: str = "INFO"
+    file: str = ".catt/logs/catt.log"
+    colored: bool = True
+    rotate_size: int = 10485760  # 10MB
+    backup_count: int = 5
+
+    def to_dict(self) -> dict:
+        return {
+            "level": self.level,
+            "file": self.file,
+            "colored": self.colored,
+            "rotate_size": self.rotate_size,
+            "backup_count": self.backup_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "LoggingSettings":
+        return cls(
+            level=data.get("level", "INFO"),
+            file=data.get("file", ".catt/logs/catt.log"),
+            colored=data.get("colored", True),
+            rotate_size=data.get("rotate_size", 10485760),
+            backup_count=data.get("backup_count", 5),
+        )
+
+
+@dataclass
+class WorkflowSettings:
+    """Workflow execution settings."""
+
+    fail_fast: bool = False
+    agent_timeout: int = 3600  # seconds
+    max_iterations: int = 40
+
+    def to_dict(self) -> dict:
+        return {
+            "fail_fast": self.fail_fast,
+            "agent_timeout": self.agent_timeout,
+            "max_iterations": self.max_iterations,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WorkflowSettings":
+        return cls(
+            fail_fast=data.get("fail_fast", False),
+            agent_timeout=data.get("agent_timeout", 3600),
+            max_iterations=data.get("max_iterations", 40),
+        )
+
+
 class UseCase(str):
     """Use case types for project initialization."""
 
@@ -41,6 +143,10 @@ class ProjectConfig:
     max_total_iterations: int = 200
     created_at: Optional[datetime] = None
     working_dir: Optional[Path] = None
+    performance: PerformanceSettings = field(default_factory=PerformanceSettings)
+    watcher: WatcherSettings = field(default_factory=WatcherSettings)
+    logging: LoggingSettings = field(default_factory=LoggingSettings)
+    workflow: WorkflowSettings = field(default_factory=WorkflowSettings)
 
     def __post_init__(self):
         """Initialize defaults."""
@@ -50,6 +156,14 @@ class ProjectConfig:
             self.created_at = datetime.now()
         if self.working_dir is None:
             self.working_dir = Path.cwd()
+        if not isinstance(self.performance, PerformanceSettings):
+            self.performance = PerformanceSettings()
+        if not isinstance(self.watcher, WatcherSettings):
+            self.watcher = WatcherSettings()
+        if not isinstance(self.logging, LoggingSettings):
+            self.logging = LoggingSettings()
+        if not isinstance(self.workflow, WorkflowSettings):
+            self.workflow = WorkflowSettings()
 
     @property
     def config_dir(self) -> Path:
@@ -110,6 +224,10 @@ class ProjectConfig:
             "max_total_iterations": self.max_total_iterations,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "working_dir": str(self.working_dir) if self.working_dir else None,
+            "performance": self.performance.to_dict(),
+            "watcher": self.watcher.to_dict(),
+            "logging": self.logging.to_dict(),
+            "workflow": self.workflow.to_dict(),
         }
 
     @classmethod
@@ -128,6 +246,10 @@ class ProjectConfig:
             max_total_iterations=data.get("max_total_iterations", 200),
             created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None,
             working_dir=Path(data["working_dir"]) if data.get("working_dir") else None,
+            performance=PerformanceSettings.from_dict(data.get("performance", {})),
+            watcher=WatcherSettings.from_dict(data.get("watcher", {})),
+            logging=LoggingSettings.from_dict(data.get("logging", {})),
+            workflow=WorkflowSettings.from_dict(data.get("workflow", {})),
         )
 
     def save(self, path: Optional[Path] = None) -> Path:

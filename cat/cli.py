@@ -63,9 +63,25 @@ def run(
     max_iterations: int = typer.Option(40, "--max-iterations", "-m", help="Max iterations per agent"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
     resume: bool = typer.Option(False, "--resume", "-r", help="Resume from saved state"),
+    no_watch: bool = typer.Option(False, "--no-watch", help="Disable file watching"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Disable output caching"),
+    log_level: str = typer.Option("INFO", "--log-level", help="Set log level (DEBUG, INFO, WARNING, ERROR)"),
+    fail_fast: bool = typer.Option(False, "--fail-fast", help="Stop on first agent failure"),
+    agent_timeout: int = typer.Option(3600, "--agent-timeout", help="Agent timeout in seconds"),
 ):
     """Run the agent workflow from configuration."""
     from cat.interactive.config import ProjectConfig
+    from cat.workflow.engine import WorkflowEngine
+    from cat.workflow.logging_config import setup_logging
+    import logging
+
+    # Setup logging
+    try:
+        log_level_value = getattr(logging, log_level.upper())
+        setup_logging(level=log_level_value, colored=True)
+    except AttributeError:
+        console.print(f"[red]Invalid log level: {log_level}[/red]")
+        raise typer.Exit(1)
 
     # Find or load config
     try:
@@ -100,60 +116,61 @@ def run(
 
     if dry_run:
         console.print()
-        console.print("[yellow]Dry run - showing team prompt[/yellow]")
-        console.print()
-        team_prompt = config.generate_team_prompt()
-        console.print(Panel(team_prompt, title="Team Creation Prompt"))
+        console.print("[yellow]Dry run - not executing workflow[/yellow]")
         return
 
-    # Generate team prompt
-    team_prompt = config.generate_team_prompt()
+    # Show configuration
+    console.print()
+    console.print("[bold]Configuration:[/bold]")
+    console.print(f"  Max iterations: {max_iterations}")
+    console.print(f"  Agent timeout: {agent_timeout}s")
+    console.print(f"  File watching: {'disabled' if no_watch else 'enabled'}")
+    console.print(f"  Output caching: {'disabled' if no_cache else 'enabled'}")
+    console.print(f"  Fail-fast: {'enabled' if fail_fast else 'disabled'}")
+    console.print(f"  Log level: {log_level.upper()}")
 
-    # Save prompt to file for reference
+    # Ensure directories exist
     config.ensure_directories()
-    prompt_file = config.config_dir / "team_prompt.md"
-    with open(prompt_file, "w") as f:
-        f.write(team_prompt)
 
-    console.print()
-    console.print("[yellow]Starting Claude Code Agent Team...[/yellow]")
-    console.print()
-    console.print("[bold]How it works:[/bold]")
-    console.print("  1. Claude Code will create an agent team with your specified roles")
-    console.print("  2. Teammates will coordinate using the built-in task list")
-    console.print("  3. Use Shift+Up/Down to switch between teammates")
-    console.print("  4. Press Ctrl+T to view the shared task list")
-    console.print()
-    console.print(f"[dim]Team prompt saved to: {prompt_file}[/dim]")
-    console.print()
-
-    # Check for Claude Code
-    import shutil
-    import subprocess
-    import os
-
-    if not shutil.which("claude"):
-        console.print("[red]Error: Claude Code CLI not found[/red]")
-        console.print("Install from: [cyan]https://claude.ai/code[/cyan]")
+    # Initialize workflow engine
+    try:
+        engine = WorkflowEngine(
+            config=config,
+            max_iterations=max_iterations,
+            console=console,
+            agent_timeout=agent_timeout,
+            fail_fast=fail_fast,
+            watch_enabled=not no_watch,
+        )
+    except Exception as e:
+        console.print(f"[red]Failed to initialize workflow engine: {e}[/red]")
         raise typer.Exit(1)
 
-    # Launch Claude Code with the team prompt
-    console.print("[green]Launching Claude Code with agent team...[/green]")
-    console.print("[dim]Press Ctrl+C to stop[/dim]")
+    # Run workflow
+    console.print()
+    console.print("[green]Starting workflow...[/green]")
+    console.print("[dim]Press Ctrl+C to interrupt[/dim]")
     console.print()
 
     try:
-        # Change to working directory and launch claude
-        os.chdir(config.working_dir)
-        subprocess.run(
-            ["claude", team_prompt],
-            check=True
-        )
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Claude Code exited with error: {e}[/red]")
-        raise typer.Exit(1)
+        success = engine.run(resume=resume)
+        if success:
+            console.print()
+            console.print("[green]✓ Workflow completed successfully![/green]")
+        else:
+            console.print()
+            console.print("[yellow]Workflow did not complete successfully[/yellow]")
+            raise typer.Exit(1)
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
+        engine.stop()
+        raise typer.Exit(130)
+    except Exception as e:
+        console.print(f"\n[red]Error: {e}[/red]")
+        engine.stop()
+        raise typer.Exit(1)
+    finally:
+        engine.cleanup()
 
 
 # =============================================================================
@@ -305,6 +322,98 @@ def agent_logs(
 
 
 # =============================================================================
+# Messages Command
+# =============================================================================
+
+
+@app.command()
+def messages(
+    role: Optional[str] = typer.Option(None, "--role", "-r", help="Filter messages for specific agent"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Number of messages to show"),
+    type_filter: Optional[str] = typer.Option(None, "--type", "-t", help="Filter by message type (FINDING, COORD, etc.)"),
+):
+    """View inter-agent messages from the message bus."""
+    from cat.interactive.config import ProjectConfig
+    from cat.workflow.messaging import MessageBus
+    from cat.agent.models import AgentRole
+
+    config = ProjectConfig.load_or_none()
+    if not config:
+        console.print("[yellow]No project configuration found.[/yellow]")
+        console.print("Run [cyan]catt init[/cyan] first.")
+        raise typer.Exit(1)
+
+    # Initialize message bus
+    message_dir = config.config_dir / "messages"
+    if not message_dir.exists():
+        console.print("[yellow]No messages found. Run a workflow first.[/yellow]")
+        return
+
+    message_bus = MessageBus(message_dir)
+
+    # Parse role filter
+    role_filter = None
+    if role:
+        try:
+            role_filter = AgentRole(role.lower())
+        except ValueError:
+            console.print(f"[red]Unknown role: {role}[/red]")
+            console.print(f"Valid roles: {', '.join(r.value for r in AgentRole)}")
+            raise typer.Exit(1)
+
+    # Get messages
+    all_messages = message_bus.get_messages(recipient=role_filter, limit=limit)
+
+    # Filter by type if specified
+    if type_filter:
+        type_filter_upper = type_filter.upper()
+        all_messages = [m for m in all_messages if m.message_type.value == type_filter_upper]
+
+    if not all_messages:
+        console.print("[yellow]No messages found matching criteria[/yellow]")
+        return
+
+    # Display messages
+    table = Table(title="Agent Messages", show_header=True)
+    table.add_column("Time", style="dim", width=12)
+    table.add_column("From", style="cyan", width=15)
+    table.add_column("To", style="cyan", width=15)
+    table.add_column("Type", style="yellow", width=12)
+    table.add_column("Content", width=50)
+
+    for msg in all_messages:
+        timestamp = msg.timestamp.strftime("%H:%M:%S")
+        sender = msg.sender.display_name if msg.sender else "System"
+        recipient = msg.recipient.display_name if msg.recipient else "All"
+        msg_type = msg.message_type.value
+        content = msg.content[:48] + "..." if len(msg.content) > 50 else msg.content
+
+        # Color code by message type
+        type_style = {
+            "FINDING": "[red]",
+            "COORDINATE": "[blue]",
+            "PROGRESS": "[green]",
+            "BLOCKED": "[yellow]",
+            "COMPLETE": "[green]",
+            "CLAIM": "[cyan]",
+        }.get(msg_type, "[white]")
+
+        table.add_row(
+            timestamp,
+            sender,
+            recipient,
+            f"{type_style}{msg_type}[/{type_style[1:]}",
+            content,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+    console.print(f"[dim]Showing {len(all_messages)} messages[/dim]")
+    console.print()
+
+
+# =============================================================================
 # Chat Command
 # =============================================================================
 
@@ -334,7 +443,7 @@ def chat(
     console.print(f"\n[bold]Chat with {agent_role.display_name}[/bold]")
     console.print("[dim]Type 'quit' or Ctrl+C to exit[/dim]\n")
 
-    # TODO: Implement actual chat via tmux send-keys
+    # TODO: Implement actual chat via AgentController
     try:
         while True:
             message = console.input("[cyan]You:[/cyan] ")
@@ -366,53 +475,12 @@ def dashboard(
 
 
 @app.command()
-def tmux(
-    session: str = typer.Option("catt-agents", "--session", "-s", help="Tmux session name"),
-):
-    """Launch interactive Tmux Agent Manager.
-
-    Provides a beautiful CLI UI to manage tmux agent sessions without knowing tmux commands.
-
-    Features:
-    - View all active agents
-    - See live output from each agent
-    - Send commands to agents
-    - Switch between agents with arrow keys
-    - Kill agents with Ctrl+K
-    - Attach to tmux with 'a' key
-
-    Keyboard Shortcuts:
-    - ↑/↓: Navigate agents
-    - Enter: Select agent
-    - Type & Enter: Send command to agent
-    - r: Refresh
-    - a: Attach to tmux session
-    - Ctrl+K: Kill current agent
-    - Ctrl+L: Clear output
-    - q: Quit
-    """
-    from cat.dashboard.tmux_manager import run_tmux_manager
-
-    console.print()
-    console.print("[bold cyan]🚀 Launching Tmux Agent Manager...[/bold cyan]")
-    console.print(f"[dim]Session: {session}[/dim]")
-    console.print()
-
-    try:
-        run_tmux_manager(session_name=session)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Manager closed.[/yellow]")
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-
-
-@app.command()
 def monitor(
-    session: str = typer.Option("catt-agents", "--session", "-s", help="Tmux session name"),
+    session: str = typer.Option("catt-agents", "--session", "-s", help="Session name"),
 ):
     """Launch Unified Agent & Task Monitor.
 
-    Combines tmux agent monitoring with kanban task board in a single unified interface.
+    Combines agent monitoring with kanban task board in a single unified interface.
 
     Features:
     - 🤖 View all active agents (left panel)
@@ -426,11 +494,10 @@ def monitor(
     - ↑/↓: Navigate between agents
     - r: Refresh all panels
     - Ctrl+K: Kill selected agent
-    - a: Attach to tmux session
     - q: Quit
 
     This is the all-in-one monitoring solution that combines:
-    - Agent management (from catt tmux)
+    - Agent management
     - Task tracking (from catt tasks --kanban)
     - Statistics dashboard
     """

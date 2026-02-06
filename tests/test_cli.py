@@ -191,28 +191,27 @@ class TestDataModels:
         assert task_completed.progress == 100
 
 
-class TestTmuxController:
-    """Tests for TmuxController."""
+class TestAgentController:
+    """Tests for AgentController."""
 
-    def test_tmux_controller_initialization(self):
-        """Test that TmuxController initializes without tmux installed."""
-        from cat.agent.tmux import TmuxController
-        import shutil
+    def test_agent_controller_initialization(self):
+        """Test that AgentController initializes."""
+        from cat.agent.controller import AgentController
 
-        # Only test if tmux is not installed
-        if not shutil.which("tmux"):
-            with pytest.raises(RuntimeError, match="tmux is not installed"):
-                TmuxController()
+        controller = AgentController()
+        assert controller is not None
+        assert controller.agents == {}
 
-    def test_tmux_session_name_default(self):
-        """Test that TmuxController uses default session name."""
-        from cat.agent.tmux import TmuxController
-        import shutil
+    def test_agent_controller_output_dir(self):
+        """Test that AgentController creates output directory."""
+        from cat.agent.controller import AgentController
+        import tempfile
 
-        # Only test if tmux is installed
-        if shutil.which("tmux"):
-            controller = TmuxController()
-            assert controller.session == "catt-agents"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "output"
+            controller = AgentController(output_dir=output_dir)
+            assert output_dir.exists()
+            assert output_dir.is_dir()
 
 
 if __name__ == "__main__":

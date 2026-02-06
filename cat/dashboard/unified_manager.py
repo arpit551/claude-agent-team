@@ -1,4 +1,8 @@
-"""Unified Agent & Task Manager - Combines Tmux monitoring with Kanban board."""
+"""Unified Agent & Task Manager - Combines Agent monitoring with Kanban board.
+
+NOTE: This module needs refactoring to use AgentController instead of tmux.
+Current implementation still uses subprocess calls to tmux - marked for migration.
+"""
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
@@ -20,7 +24,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Agent:
-    """Represents a tmux agent."""
+    """Represents an agent process."""
     name: str
     model: str
     output: str = ""
